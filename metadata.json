@@ -1,0 +1,6 @@
+{
+  "name": "Apartment Expense Splitter",
+  "description": "Calculate and split grocery expenses evenly among roommates based on the number of days they lived in the apartment in a billing month.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      // Workaround for environments where window.fetch has only a getter
+      // and libraries or extensions attempt to overwrite it, causing a crash.
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          if (originalFetch) {
+            var fetchVal = originalFetch;
+            Object.defineProperty(window, 'fetch', {
+              get: function() { return fetchVal; },
+              set: function(val) { fetchVal = val; },
+              configurable: true,
+              enumerable: true
+            });
+          }
+        } catch (e) {
+          console.warn("Failed to polyfill fetch setter:", e);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
