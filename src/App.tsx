@@ -22,6 +22,10 @@ import {
   FileSpreadsheet,
   UploadCloud,
   CheckCircle2,
+  Camera,
+  Eye,
+  X,
+  Image,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -58,6 +62,10 @@ export default function App() {
   const [expenseDate, setExpenseDate] = useState("");
   const [expenseCategory, setExpenseCategory] = useState<"Groceries" | "Utilities" | "Supplies" | "Pantry" | "Other">("Groceries");
   const [expenseSplitType, setExpenseSplitType] = useState<"proportional" | "equal">("proportional");
+  const [expenseReceiptImage, setExpenseReceiptImage] = useState<string>("");
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const [previewModalImage, setPreviewModalImage] = useState<string | null>(null);
 
   // Ledger Search and Filter state
   const [expenseSearch, setExpenseSearch] = useState("");
@@ -77,6 +85,10 @@ export default function App() {
 
   // Hidden file input reference for JSON backup import
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Camera Refs
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const [successMessage, setSuccessMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -124,6 +136,92 @@ export default function App() {
       setExpenseDate(`${currentMonthId}-01`);
     }
   }, [currentMonthId]);
+
+  // Clean up camera on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
+  const startCamera = async () => {
+    setCameraError("");
+    setIsCameraActive(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(err => {
+          console.error("Error playing video:", err);
+        });
+      }
+    } catch (err: any) {
+      console.error("Camera access failed:", err);
+      let errorMsg = "Could not access camera. Please make sure camera permissions are granted.";
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        errorMsg = "Camera permission denied. Please allow camera access in your browser settings.";
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        errorMsg = "No camera device found on this system.";
+      }
+      setCameraError(errorMsg);
+      showErrNotification(errorMsg);
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraActive(false);
+  };
+
+  const capturePhoto = () => {
+    if (videoRef.current) {
+      const video = videoRef.current;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        try {
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+          setExpenseReceiptImage(dataUrl);
+          stopCamera();
+          showNotification("Receipt photo captured successfully!");
+        } catch (e) {
+          console.error("Canvas toDataURL error:", e);
+          showErrNotification("Failed to process captured photo.");
+        }
+      }
+    }
+  };
+
+  const handleReceiptFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (!file.type.startsWith("image/")) {
+        showErrNotification("Please select an image file.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setExpenseReceiptImage(event.target.result as string);
+          showNotification("Receipt image loaded successfully!");
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   // --- 2. Action Handlers ---
   const loadSampleData = () => {
@@ -286,6 +384,7 @@ export default function App() {
       createdAt: Date.now(),
       category: expenseCategory,
       splitType: expenseSplitType,
+      receiptImage: expenseReceiptImage || undefined,
     };
 
     setExpenses((prev) => [...prev, newExp]);
@@ -293,6 +392,7 @@ export default function App() {
     setExpenseAmount("");
     setExpenseCategory("Groceries");
     setExpenseSplitType("proportional");
+    setExpenseReceiptImage("");
     showNotification(`Logged expense: "${desc}" (${formatCurrency(amt)})`);
   };
 
@@ -1291,6 +1391,154 @@ export default function App() {
                 />
               </div>
 
+              {/* Receipt Image Capture Section */}
+              <div className="md:col-span-12 flex flex-col gap-2 mt-2">
+                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-mono flex items-center gap-1">
+                  <Camera className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Receipt Attachment (Optional)</span>
+                </label>
+                
+                {/* No image & no camera active */}
+                {!isCameraActive && !expenseReceiptImage && (
+                  <div className="border border-dashed border-slate-300 rounded-xl p-6 bg-white text-center flex flex-col items-center justify-center gap-3 shadow-3xs hover:bg-slate-100/30 transition-all">
+                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-full">
+                      <Image className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700">Attach a photo of the grocery receipt</p>
+                      <p className="text-[10px] text-slate-400 mt-1 font-mono">Use camera scanner or upload an image file</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 justify-center mt-1">
+                      <button
+                        type="button"
+                        onClick={startCamera}
+                        className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>Scan Receipt (Camera)</span>
+                      </button>
+                      <label className="px-3.5 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold rounded-lg shadow-3xs cursor-pointer transition flex items-center gap-1.5">
+                        <UploadCloud className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Upload Image File</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleReceiptFileUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* Camera live feed */}
+                {isCameraActive && (
+                  <div className="border border-slate-300 rounded-xl overflow-hidden bg-slate-900 relative shadow-inner">
+                    {/* Viewport simulation */}
+                    <div className="relative aspect-video max-h-[300px] w-full flex items-center justify-center overflow-hidden">
+                      <video
+                        ref={videoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-cover"
+                      />
+                      {/* Scanning visual effect lines */}
+                      <div className="absolute inset-0 border-2 border-indigo-500/40 pointer-events-none rounded-xl m-4 flex flex-col justify-between">
+                        <div className="flex justify-between p-2">
+                          <div className="w-4 h-4 border-t-2 border-l-2 border-indigo-400" />
+                          <div className="w-4 h-4 border-t-2 border-r-2 border-indigo-400" />
+                        </div>
+                        <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-indigo-400 to-transparent shadow-md animate-bounce opacity-80" />
+                        <div className="flex justify-between p-2">
+                          <div className="w-4 h-4 border-b-2 border-l-2 border-indigo-400" />
+                          <div className="w-4 h-4 border-b-2 border-r-2 border-indigo-400" />
+                        </div>
+                      </div>
+                    </div>
+                    {/* Camera error state */}
+                    {cameraError && (
+                      <div className="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center text-center p-4 text-white z-10 gap-2">
+                        <AlertCircle className="w-8 h-8 text-rose-500" />
+                        <p className="text-xs font-bold">{cameraError}</p>
+                        <button
+                          type="button"
+                          onClick={stopCamera}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-lg"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
+                    {/* Camera controls */}
+                    <div className="p-3 bg-slate-950 flex justify-between items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={stopCamera}
+                        className="px-3 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg text-xs font-medium cursor-pointer transition"
+                      >
+                        Cancel Camera
+                      </button>
+                      <button
+                        type="button"
+                        onClick={capturePhoto}
+                        className="px-5 py-2 bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-bold rounded-lg shadow-md transition-all flex items-center gap-1.5 cursor-pointer font-mono uppercase tracking-wider"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Capture Receipt</span>
+                      </button>
+                      <div className="w-20 hidden sm:block" /> {/* spacer for visual balancing */}
+                    </div>
+                  </div>
+                )}
+
+                {/* Captured receipt thumbnail with options */}
+                {expenseReceiptImage && (
+                  <div className="border border-slate-200 bg-slate-50 rounded-xl p-3 flex items-center justify-between gap-4 shadow-3xs">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-300 bg-white shrink-0 group">
+                        <img
+                          src={expenseReceiptImage}
+                          alt="Receipt Thumbnail"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-700 truncate">Receipt Photo Attached</p>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewModalImage(expenseReceiptImage)}
+                          className="text-[10px] text-indigo-600 hover:text-indigo-700 font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>View Full Size</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={startCamera}
+                        className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 text-xs font-medium rounded-lg transition cursor-pointer flex items-center gap-1"
+                        title="Retake receipt capture"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>Retake</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExpenseReceiptImage("")}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition border border-transparent cursor-pointer"
+                        title="Delete receipt attachment"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="md:col-span-12 flex justify-end pt-2">
                 <button
                   type="submit"
@@ -1377,6 +1625,17 @@ export default function App() {
                             <span className="font-semibold text-xs text-slate-800 truncate">
                               {exp.description}
                             </span>
+                            {exp.receiptImage && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewModalImage(exp.receiptImage!)}
+                                className="inline-flex items-center gap-1 text-[9px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100/80 px-1.5 py-0.5 rounded-md cursor-pointer transition active:scale-95"
+                                title="View attached grocery receipt photo proof"
+                              >
+                                <Camera className="w-2.5 h-2.5" />
+                                <span>Receipt Proof</span>
+                              </button>
+                            )}
                           </div>
                           
                           <div className="text-[10px] text-slate-400 mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -1634,6 +1893,76 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* RECEIPT FULL PREVIEW MODAL */}
+      <AnimatePresence>
+        {previewModalImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setPreviewModalImage(null)}
+            className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4 cursor-zoom-out"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl overflow-hidden max-w-lg w-full shadow-2xl border border-slate-200 flex flex-col max-h-[85vh] cursor-default"
+            >
+              {/* Modal header */}
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-indigo-600" />
+                  <span className="font-bold text-xs uppercase tracking-wider text-slate-700 font-mono">
+                    Receipt Image Verification
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPreviewModalImage(null)}
+                  className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg transition"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal content */}
+              <div className="p-4 bg-slate-50 flex-1 flex items-center justify-center overflow-y-auto max-h-[60vh]">
+                <img
+                  src={previewModalImage}
+                  alt="Receipt Scan"
+                  referrerPolicy="no-referrer"
+                  className="max-w-full max-h-full object-contain rounded-lg border border-slate-200 shadow-xs"
+                />
+              </div>
+
+              {/* Modal footer */}
+              <div className="p-4 border-t border-slate-100 flex justify-between items-center bg-slate-50/50">
+                <span className="text-[10px] text-slate-400 font-mono">
+                  RoomSplit Receipt Scanner v1.2
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const link = document.createElement("a");
+                    link.href = previewModalImage;
+                    link.download = "receipt-verification.jpg";
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                  }}
+                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition shadow-xs cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Image</span>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

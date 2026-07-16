@@ -18,6 +18,7 @@ export interface Expense {
   createdAt: number;
   category?: "Groceries" | "Utilities" | "Supplies" | "Pantry" | "Other";
   splitType?: "proportional" | "equal"; // proportional splits by days lived, equal splits evenly
+  receiptImage?: string; // Base64 / data URL representing captured photo of grocery receipt
 }
 
 export interface ResidentSummary {
