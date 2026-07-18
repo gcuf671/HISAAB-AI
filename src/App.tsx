@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
-import { Resident, Expense } from "./types";
+import { Resident, Expense, HouseNote } from "./types";
 import {
   formatMonthId,
   parseMonthId,
@@ -42,6 +42,37 @@ import { generateMonthlyPDF } from "./pdfGenerator";
 
 const LOCAL_STORAGE_KEY_RESIDENTS = "apartment_splitter_residents";
 const LOCAL_STORAGE_KEY_EXPENSES = "apartment_splitter_expenses";
+const LOCAL_STORAGE_KEY_HOUSE_NOTES = "apartment_splitter_house_notes";
+
+const DEFAULT_HOUSE_NOTES: HouseNote[] = [
+  {
+    id: "note-1",
+    message: "Water filter needs replacing this week. It's tasting a bit metallic!",
+    authorId: "all",
+    authorName: "House Admin",
+    priority: "Medium",
+    color: "blue",
+    createdAt: Date.now() - 3600000 * 24 * 2, // 2 days ago
+  },
+  {
+    id: "note-2",
+    message: "Urgent: Someone left the back window wide open yesterday when it started raining. Please check before heading out!",
+    authorId: "all",
+    authorName: "Roster Board",
+    priority: "Urgent",
+    color: "pink",
+    createdAt: Date.now() - 3600000 * 5, // 5 hours ago
+  },
+  {
+    id: "note-3",
+    message: "Chore check-in: It's my turn for trash duty this week, but I'll be out of town. Can someone swap with me? I'll do next weekend.",
+    authorId: "all",
+    authorName: "Sam",
+    priority: "Low",
+    color: "yellow",
+    createdAt: Date.now() - 3600000 * 24, // 1 day ago
+  }
+];
 
 export default function App() {
   // --- 1. State Initialization ---
@@ -52,6 +83,7 @@ export default function App() {
 
   const [residents, setResidents] = useState<Resident[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [houseNotes, setHouseNotes] = useState<HouseNote[]>([]);
   const [isInitialLoaded, setIsInitialLoaded] = useState(false);
 
   // Form states
@@ -66,6 +98,13 @@ export default function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [previewModalImage, setPreviewModalImage] = useState<string | null>(null);
+  const [isAnalyzingReceipt, setIsAnalyzingReceipt] = useState(false);
+
+  // House Notes Form states
+  const [noteMessage, setNoteMessage] = useState("");
+  const [noteAuthorId, setNoteAuthorId] = useState("");
+  const [notePriority, setNotePriority] = useState<"Low" | "Medium" | "Urgent">("Medium");
+  const [noteColor, setNoteColor] = useState<"yellow" | "blue" | "green" | "pink">("yellow");
 
   // Ledger Search and Filter state
   const [expenseSearch, setExpenseSearch] = useState("");
@@ -97,6 +136,7 @@ export default function App() {
   useEffect(() => {
     const savedResidents = localStorage.getItem(LOCAL_STORAGE_KEY_RESIDENTS);
     const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
+    const savedHouseNotes = localStorage.getItem(LOCAL_STORAGE_KEY_HOUSE_NOTES);
 
     if (savedResidents && savedExpenses) {
       try {
@@ -108,6 +148,17 @@ export default function App() {
       }
     } else {
       loadSampleData();
+    }
+
+    if (savedHouseNotes) {
+      try {
+        setHouseNotes(JSON.parse(savedHouseNotes));
+      } catch (err) {
+        console.error("Error parsing saved notes", err);
+        setHouseNotes(DEFAULT_HOUSE_NOTES);
+      }
+    } else {
+      setHouseNotes(DEFAULT_HOUSE_NOTES);
     }
     setIsInitialLoaded(true);
   }, []);
@@ -124,6 +175,12 @@ export default function App() {
       localStorage.setItem(LOCAL_STORAGE_KEY_EXPENSES, JSON.stringify(expenses));
     }
   }, [expenses, isInitialLoaded]);
+
+  useEffect(() => {
+    if (isInitialLoaded) {
+      localStorage.setItem(LOCAL_STORAGE_KEY_HOUSE_NOTES, JSON.stringify(houseNotes));
+    }
+  }, [houseNotes, isInitialLoaded]);
 
   // Set default expense date based on the current selected month
   useEffect(() => {
@@ -145,6 +202,44 @@ export default function App() {
       }
     };
   }, []);
+
+  const analyzeReceiptImage = async (imageDataUrl: string) => {
+    setIsAnalyzingReceipt(true);
+    showNotification("Gemini is analyzing your receipt image...");
+    try {
+      const response = await fetch("/api/analyze-receipt", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ image: imageDataUrl }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Server returned status ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data) {
+        if (data.amount !== undefined) {
+          setExpenseAmount(data.amount.toString());
+        }
+        if (data.description !== undefined) {
+          setExpenseDescription(data.description);
+        }
+        if (data.category !== undefined) {
+          setExpenseCategory(data.category);
+        }
+        showNotification("Receipt analyzed! Amount, Description, and Category pre-filled.");
+      }
+    } catch (err: any) {
+      console.error("Failed to analyze receipt:", err);
+      showErrNotification(`Receipt analysis failed: ${err.message || err}`);
+    } finally {
+      setIsAnalyzingReceipt(false);
+    }
+  };
 
   const startCamera = async () => {
     setCameraError("");
@@ -197,12 +292,58 @@ export default function App() {
           setExpenseReceiptImage(dataUrl);
           stopCamera();
           showNotification("Receipt photo captured successfully!");
+          analyzeReceiptImage(dataUrl);
         } catch (e) {
           console.error("Canvas toDataURL error:", e);
           showErrNotification("Failed to process captured photo.");
         }
       }
     }
+  };
+
+  const compressImage = (dataUrl: string, maxWidth = 1024, maxHeight = 1024): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = document.createElement("img");
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        // Calculate new dimensions
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          try {
+            const compressed = canvas.toDataURL("image/jpeg", 0.75);
+            resolve(compressed);
+          } catch (e) {
+            console.error("Canvas export failed", e);
+            resolve(dataUrl);
+          }
+        } else {
+          resolve(dataUrl); // fallback
+        }
+      };
+      img.onerror = () => {
+        resolve(dataUrl); // fallback
+      };
+      img.src = dataUrl;
+    });
   };
 
   const handleReceiptFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
@@ -213,14 +354,63 @@ export default function App() {
         return;
       }
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
-          setExpenseReceiptImage(event.target.result as string);
-          showNotification("Receipt image loaded successfully!");
+          const rawDataUrl = event.target.result as string;
+          showNotification("Uploading and compressing receipt image...");
+          try {
+            const compressedDataUrl = await compressImage(rawDataUrl);
+            setExpenseReceiptImage(compressedDataUrl);
+            showNotification("Receipt image processed successfully!");
+            analyzeReceiptImage(compressedDataUrl);
+          } catch (error) {
+            console.error("Image compression error:", error);
+            setExpenseReceiptImage(rawDataUrl);
+            showNotification("Receipt image loaded!");
+            analyzeReceiptImage(rawDataUrl);
+          }
         }
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleAddHouseNote = (e: FormEvent) => {
+    e.preventDefault();
+    const msg = noteMessage.trim();
+    if (!msg) {
+      showErrNotification("Please enter a message for your sticky note.");
+      return;
+    }
+
+    let authorName = "Someone";
+    if (noteAuthorId === "all" || !noteAuthorId) {
+      authorName = "All Flatmates";
+    } else {
+      const found = residents.find((r) => r.id === noteAuthorId);
+      if (found) {
+        authorName = found.name;
+      }
+    }
+
+    const newNote: HouseNote = {
+      id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      message: msg,
+      authorId: noteAuthorId || "all",
+      authorName: authorName,
+      priority: notePriority,
+      color: noteColor,
+      createdAt: Date.now(),
+    };
+
+    setHouseNotes((prev) => [newNote, ...prev]);
+    setNoteMessage("");
+    showNotification("New sticky note posted successfully!");
+  };
+
+  const handleDeleteHouseNote = (id: string) => {
+    setHouseNotes((prev) => prev.filter((note) => note.id !== id));
+    showNotification("Sticky note completed and removed!");
   };
 
   // --- 2. Action Handlers ---
@@ -239,8 +429,10 @@ export default function App() {
     ) {
       setResidents([]);
       setExpenses([]);
+      setHouseNotes(DEFAULT_HOUSE_NOTES);
       localStorage.removeItem(LOCAL_STORAGE_KEY_RESIDENTS);
       localStorage.removeItem(LOCAL_STORAGE_KEY_EXPENSES);
+      localStorage.removeItem(LOCAL_STORAGE_KEY_HOUSE_NOTES);
       showNotification("All data cleared successfully.");
     }
   };
@@ -1494,7 +1686,13 @@ export default function App() {
 
                 {/* Captured receipt thumbnail with options */}
                 {expenseReceiptImage && (
-                  <div className="border border-slate-200 bg-slate-50 rounded-xl p-3 flex items-center justify-between gap-4 shadow-3xs">
+                  <div className="border border-slate-200 bg-slate-50 rounded-xl p-3 flex items-center justify-between gap-4 shadow-3xs relative overflow-hidden">
+                    {isAnalyzingReceipt && (
+                      <div className="absolute inset-0 bg-white/85 flex items-center justify-center gap-2.5 z-10 backdrop-blur-xs">
+                        <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-xs font-bold text-indigo-700 font-mono animate-pulse">Gemini AI reading receipt...</span>
+                      </div>
+                    )}
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-300 bg-white shrink-0 group">
                         <img
@@ -1520,7 +1718,8 @@ export default function App() {
                       <button
                         type="button"
                         onClick={startCamera}
-                        className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 text-xs font-medium rounded-lg transition cursor-pointer flex items-center gap-1"
+                        disabled={isAnalyzingReceipt}
+                        className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 text-xs font-medium rounded-lg transition cursor-pointer flex items-center gap-1 disabled:opacity-50"
                         title="Retake receipt capture"
                       >
                         <Camera className="w-3.5 h-3.5" />
@@ -1529,7 +1728,8 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setExpenseReceiptImage("")}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition border border-transparent cursor-pointer"
+                        disabled={isAnalyzingReceipt}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition border border-transparent cursor-pointer disabled:opacity-50"
                         title="Delete receipt attachment"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -1878,6 +2078,280 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+
+          {/* HOUSE NOTES STICKY NOTE BOARD */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/60 shadow-xs flex flex-col gap-5" id="house-notes-section">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl">📌</span>
+                <h3 className="font-serif font-bold text-xl text-slate-900">
+                  House Sticky Notes
+                </h3>
+              </div>
+              <span className="font-mono text-[9px] uppercase bg-rose-600 text-white px-2.5 py-1 rounded-full tracking-wider font-semibold">
+                {houseNotes.length} Reminders
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Leave short, urgent messages regarding apartment chores, utility reminders, or general flatmate check-ins.
+            </p>
+
+            {/* Note creation form */}
+            <form onSubmit={handleAddHouseNote} className="p-4 bg-slate-50 border border-slate-200/50 rounded-xl flex flex-col gap-3">
+              <div>
+                <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono mb-1">
+                  Message / Reminder
+                </label>
+                <textarea
+                  placeholder="e.g. Please take out the recycling tonight!"
+                  value={noteMessage}
+                  onChange={(e) => setNoteMessage(e.target.value)}
+                  maxLength={150}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 text-xs text-slate-800 placeholder-slate-400"
+                  rows={2}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono mb-1">
+                    Left By
+                  </label>
+                  <select
+                    value={noteAuthorId}
+                    onChange={(e) => setNoteAuthorId(e.target.value)}
+                    className="w-full px-2 py-1.5 border border-slate-200 bg-white rounded-lg text-[11px] text-slate-700 focus:outline-hidden cursor-pointer"
+                  >
+                    <option value="all">All Flatmates</option>
+                    {residents.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono mb-1">
+                    Priority
+                  </label>
+                  <select
+                    value={notePriority}
+                    onChange={(e) => setNotePriority(e.target.value as any)}
+                    className="w-full px-2 py-1.5 border border-slate-200 bg-white rounded-lg text-[11px] text-slate-700 focus:outline-hidden cursor-pointer"
+                  >
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Urgent">Urgent</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 mt-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Color:</span>
+                  <div className="flex gap-1.5">
+                    {(["yellow", "blue", "green", "pink"] as const).map((color) => {
+                      const colorClasses = {
+                        yellow: "bg-amber-100 border-amber-300",
+                        blue: "bg-sky-100 border-sky-300",
+                        green: "bg-emerald-100 border-emerald-300",
+                        pink: "bg-rose-100 border-rose-300",
+                      };
+                      return (
+                        <button
+                          key={color}
+                          type="button"
+                          onClick={() => setNoteColor(color)}
+                          className={`w-5 h-5 rounded-full border-2 ${colorClasses[color]} transition-all active:scale-90 cursor-pointer ${
+                            noteColor === color ? "ring-2 ring-indigo-500 scale-110" : "opacity-75 hover:opacity-100"
+                          }`}
+                          title={`Select ${color} color`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-[10px] uppercase tracking-wider rounded-lg transition shadow-xs flex items-center gap-1 cursor-pointer font-mono"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Pin Note</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Note Cards Board */}
+            <div className="grid grid-cols-1 gap-4 mt-2 max-h-[420px] overflow-y-auto pr-1">
+              {houseNotes.length === 0 ? (
+                <div className="text-center py-8 bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+                  <p className="text-xs text-slate-400 italic">No notes pinned on the board.</p>
+                  <p className="text-[9px] text-slate-400 uppercase tracking-wider font-mono mt-1">
+                    Leave a Chore or Reminder above.
+                  </p>
+                </div>
+              ) : (
+                <AnimatePresence initial={false}>
+                  {houseNotes.map((note) => {
+                    // Pastel styles mapping
+                    const cardStyles = {
+                      yellow: "bg-amber-50/90 border-amber-200/85 hover:bg-amber-50 shadow-amber-100/50",
+                      blue: "bg-sky-50/90 border-sky-200/85 hover:bg-sky-50 shadow-sky-100/50",
+                      green: "bg-emerald-50/90 border-emerald-200/85 hover:bg-emerald-50 shadow-emerald-100/50",
+                      pink: "bg-rose-50/90 border-rose-200/85 hover:bg-rose-50 shadow-rose-100/50",
+                    };
+
+                    const priorityBadges = {
+                      Low: "bg-slate-100 text-slate-600 border-slate-200",
+                      Medium: "bg-amber-100/80 text-amber-800 border-amber-200",
+                      Urgent: "bg-rose-100 text-rose-800 border-rose-200 animate-pulse",
+                    };
+
+                    const noteBg = cardStyles[note.color] || cardStyles.yellow;
+                    const priorityClass = priorityBadges[note.priority] || priorityBadges.Medium;
+
+                    return (
+                      <motion.div
+                        key={note.id}
+                        initial={{ opacity: 0, scale: 0.9, rotate: -1 }}
+                        animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                        exit={{ opacity: 0, scale: 0.8, y: -10 }}
+                        className={`p-4 border rounded-xl shadow-3xs hover:shadow-2xs transition-all duration-150 flex flex-col justify-between gap-3 relative overflow-hidden ${noteBg}`}
+                      >
+                        {/* Urgent subtle warning top bar strip */}
+                        {note.priority === "Urgent" && (
+                          <div className="absolute top-0 left-0 right-0 h-1 bg-rose-500 animate-pulse" />
+                        )}
+
+                        <div className="flex justify-between items-start gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5 font-sans">
+                            <span className="font-semibold text-[10px] text-slate-800 font-mono bg-white/70 px-1.5 py-0.5 rounded-md border border-slate-200/30">
+                              By: {note.authorName}
+                            </span>
+                            <span className={`text-[9px] font-bold uppercase font-mono px-1.5 py-0.5 rounded-full border ${priorityClass}`}>
+                              {note.priority}
+                            </span>
+                          </div>
+
+                          <button
+                            onClick={() => handleDeleteHouseNote(note.id)}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-md border border-transparent hover:border-slate-200 transition cursor-pointer"
+                            title="Mark reminder as completed"
+                          >
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          </button>
+                        </div>
+
+                        <p className="text-xs text-slate-800 font-sans leading-relaxed break-words font-medium whitespace-pre-line">
+                          {note.message}
+                        </p>
+
+                        <div className="text-[9px] text-slate-400 font-mono text-right flex items-center justify-end gap-1.5">
+                          <span>📅</span>
+                          <span>{new Date(note.createdAt).toLocaleDateString()}</span>
+                          <span>•</span>
+                          <span>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* URDU CALCULATION EXPLANATION SECTION */}
+        <div className="lg:col-span-12 mt-4" id="urdu-calculation-explanation">
+          <div className="bg-gradient-to-br from-indigo-50/45 to-slate-50 border border-slate-200/80 rounded-3xl p-6 sm:p-8 shadow-3xs hover:shadow-2xs transition-all duration-200">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-indigo-100/60 pb-6 mb-6">
+              <div className="flex items-center gap-3.5">
+                <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-sm">
+                  <Info className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-serif font-bold text-xl sm:text-2xl text-slate-900">
+                    حساب کتاب کا طریقہ کار (Explanation of Split Method)
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-1">
+                    فلیٹ میٹس کے درمیان اخراجات کی تقسیم کو آسان اردو میں سمجھیں تاکہ ہر رکن مطمئن رہے۔
+                  </p>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono bg-indigo-50 border border-indigo-100 text-indigo-700 px-3 py-1.5 rounded-full font-bold uppercase tracking-wider">
+                Urdu Guide Included
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-right" dir="rtl">
+              
+              {/* Right Column (RTL Flow) */}
+              <div className="flex flex-col gap-6">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 justify-start mb-2.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                    1. رہنے کے دنوں کے حساب سے تقسیم (Proportional Split)
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    یہ طریقہ ان اخراجات کے لیے استعمال ہوتا ہے جو روزمرہ کے راشن یا پینٹری کے سامان پر مبنی ہوتے ہیں۔ یہاں ہر فلیٹ میٹ صرف اپنے یہاں گزارے ہوئے دنوں کے مطابق ادائیگی کرتا ہے۔
+                  </p>
+                  <div className="bg-white p-4 rounded-2xl border border-slate-150 mt-3 font-mono text-[11px] text-indigo-950 shadow-3xs leading-relaxed">
+                    <strong className="text-xs text-indigo-900 block mb-1.5">حساب کا فارمولا:</strong>
+                    • مجموعی دن = تمام فعال فلیٹ میٹس کے رہنے کے دنوں کا مجموعہ<br />
+                    • روزانہ کا ریٹ = کل پروپورشنل خرچہ ÷ مجموعی دن<br />
+                    • فلیٹ میٹ کا حصہ = اس کے رہنے کے دن × روزانہ کا ریٹ
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 justify-start mb-2.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                    2. برابر کی تقسیم (Equal Split / Fixed Bills)
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    یہ طریقہ فکسڈ اخراجات جیسے بجلی، انٹرنیٹ، گیس کے بلوں، یا ایسی سپلائیز کے لیے ہے جو سب کے لیے یکساں ہوتی ہیں، چاہے کوئی فلیٹ میں کم دن رہا ہو یا زیادہ۔
+                  </p>
+                  <div className="bg-white p-4 rounded-2xl border border-slate-150 mt-3 font-mono text-[11px] text-indigo-950 shadow-3xs leading-relaxed">
+                    <strong className="text-xs text-indigo-900 block mb-1.5">حساب کا فارمولا:</strong>
+                    • ہر فرد کا برابر حصہ = فکسڈ بلز کی کل رقم ÷ فلیٹ میٹس کی کل تعداد
+                  </div>
+                </div>
+              </div>
+
+              {/* Left Column (RTL Flow) */}
+              <div className="flex flex-col gap-6">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 justify-start mb-2.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                    3. کل واجب الادا حصہ اور باقی رقم کا حساب
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    ہر فلیٹ میٹ کے دونوں طریقوں کے حصوں کو ملا کر ان کا کل واجب الادا حصہ بنتا ہے۔ اس کے بعد ادائیگی کا حتمی حساب درج ذیل طریقے سے لگایا جاتا ہے:
+                  </p>
+                  <div className="bg-white p-4 rounded-2xl border border-slate-150 mt-3 font-mono text-[11px] text-indigo-950 shadow-3xs leading-relaxed">
+                    <strong className="text-xs text-indigo-900 block mb-1.5 font-sans">حتمی حساب (Final Balance):</strong>
+                    باقی رقم (Balance) = فلیٹ میٹ کی اپنی جیب سے کی گئی ادائیگی - اس کا کل واجب الادا حصہ<br />
+                    <span className="text-emerald-700 block mt-2"><strong>• اگر رقم جمع (Positive) ہو:</strong> تو انہوں نے اپنے حصے سے زیادہ پیسے دیے ہیں اور انہیں اتنے پیسے واپس ملیں گے۔</span>
+                    <span className="text-rose-600 block mt-1.5"><strong>• اگر رقم منفی (Negative) ہو:</strong> تو انہوں نے اپنے حصے سے کم خرچ کیا ہے اور انہیں اتنے پیسے بقایا دینے ہوں گے۔</span>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 justify-start mb-2.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                    4. ادائیگیوں کو آسان بنانا (Smart Settlements)
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    ہمارا سسٹم ایک سمارٹ الگورتھم استعمال کرتا ہے جو یہ حساب لگاتا ہے کہ کس نے کس کو کتنے پیسے دینے ہیں۔ یہ سسٹم ایسے ٹرانزیکشنز تجویز کرتا ہے جن کے ذریعے کم سے کم مرحلوں میں سب کا حساب بے باق ہو جائے، اور آپ کو الگ الگ فلیٹ میٹس کو بار بار رقم نہ بھیجنی پڑے۔
+                  </p>
+                </div>
+              </div>
+
+            </div>
           </div>
         </div>
       </main>

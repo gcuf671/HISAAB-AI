@@ -46,3 +46,13 @@ export interface MonthlyCalculation {
   summaries: ResidentSummary[];
   settlements: Settlement[];
 }
+
+export interface HouseNote {
+  id: string;
+  message: string;
+  authorId: string;
+  authorName: string;
+  priority: "Low" | "Medium" | "Urgent";
+  color: "yellow" | "blue" | "green" | "pink";
+  createdAt: number;
+}
